@@ -5,7 +5,7 @@
 set -euo pipefail
 
 NAME=${NAME:-connect-team-demo}
-REGION=${AWS_REGION:-us-east-1}
+REGION=${AWS_REGION:-us-east-2}
 ZONE=${ZONE:-${REGION}a}
 BUNDLE=${BUNDLE:-small_3_0}         # 2 GB RAM, 2 vCPU
 BLUEPRINT=${BLUEPRINT:-ubuntu_24_04}
