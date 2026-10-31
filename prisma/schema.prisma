@@ -1,0 +1,236 @@
+// Connect Team data model.
+// Production target: Amazon RDS for PostgreSQL (encrypted at rest) under the AWS BAA.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  STAFF
+  ADMIN
+  OWNER
+}
+
+enum EntrySource {
+  CLOCK // clocked in/out live in the app
+  MANUAL // typed in after the fact; needs approval
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  DENIED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  title        String?
+  phone        String?
+  role         Role     @default(STAFF)
+  passwordHash String?
+  // Base pay rate, used when a service has no rate of its own.
+  hourlyRate   Decimal? @db.Decimal(10, 2)
+  active       Boolean  @default(true)
+  managerId    String?
+  manager      User?    @relation("OrgChart", fields: [managerId], references: [id])
+  reports      User[]   @relation("OrgChart")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions          Session[]
+  timeEntries       TimeEntry[]          @relation("EntryOwner")
+  reviewedEntries   TimeEntry[]          @relation("EntryReviewer")
+  changeRequests    TimeChangeRequest[]  @relation("ChangeRequester")
+  reviewedChanges   TimeChangeRequest[]  @relation("ChangeReviewer")
+  serviceRates      StaffServiceRate[]
+  memberships       ConversationMember[]
+  messages          Message[]
+  conversations     Conversation[]
+  announcements     Announcement[]
+  timeOffRequests   TimeOffRequest[]     @relation("TimeOffRequester")
+  reviewedTimeOff   TimeOffRequest[]     @relation("TimeOffReviewer")
+  auditLogs         AuditLog[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  // SHA-256 of the cookie token; the raw token is never stored.
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+model Service {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  // Rate for this service (e.g. eval vs group session). Overrides the staff base rate.
+  defaultRate Decimal? @db.Decimal(10, 2)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  staffRates  StaffServiceRate[]
+  timeEntries TimeEntry[]
+}
+
+// Per-staff override for a specific service. Highest priority when computing pay.
+model StaffServiceRate {
+  id        String  @id @default(cuid())
+  userId    String
+  serviceId String
+  rate      Decimal @db.Decimal(10, 2)
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  service   Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, serviceId])
+}
+
+// A child seen by staff. Kept to the minimum needed (first name + last initial).
+// externalId is reserved for a future IntakeQ sync.
+model Client {
+  id          String   @id @default(cuid())
+  firstName   String
+  lastInitial String
+  externalId  String?  @unique
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  timeEntries TimeEntry[]
+}
+
+model TimeEntry {
+  id         String         @id @default(cuid())
+  userId     String
+  user       User           @relation("EntryOwner", fields: [userId], references: [id])
+  clockIn    DateTime
+  clockOut   DateTime?
+  serviceId  String?
+  service    Service?       @relation(fields: [serviceId], references: [id])
+  clientId   String?
+  client     Client?        @relation(fields: [clientId], references: [id])
+  note       String?
+  source     EntrySource
+  status     ApprovalStatus @default(APPROVED)
+  reviewedById String?
+  reviewedBy User?          @relation("EntryReviewer", fields: [reviewedById], references: [id])
+  reviewedAt DateTime?
+  reviewNote String?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  changeRequests TimeChangeRequest[]
+
+  @@index([userId, clockIn])
+  @@index([status])
+}
+
+// Staff cannot edit their own times; they ask for a change instead.
+model TimeChangeRequest {
+  id                String         @id @default(cuid())
+  timeEntryId       String
+  timeEntry         TimeEntry      @relation(fields: [timeEntryId], references: [id], onDelete: Cascade)
+  requestedById     String
+  requestedBy       User           @relation("ChangeRequester", fields: [requestedById], references: [id])
+  proposedClockIn   DateTime
+  proposedClockOut  DateTime
+  proposedServiceId String?
+  proposedClientId  String?
+  proposedNote      String?
+  reason            String
+  status            ApprovalStatus @default(PENDING)
+  reviewedById      String?
+  reviewedBy        User?          @relation("ChangeReviewer", fields: [reviewedById], references: [id])
+  reviewedAt        DateTime?
+  reviewNote        String?
+  createdAt         DateTime       @default(now())
+
+  @@index([status])
+}
+
+model Conversation {
+  id          String   @id @default(cuid())
+  // Null for a direct message; set for a group.
+  name        String?
+  isGroup     Boolean  @default(false)
+  createdById String
+  createdBy   User     @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members  ConversationMember[]
+  messages Message[]
+}
+
+model ConversationMember {
+  conversationId String
+  userId         String
+  lastReadAt     DateTime     @default(now())
+  joinedAt       DateTime     @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([conversationId, userId])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         User         @relation(fields: [senderId], references: [id])
+  body           String
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+model Announcement {
+  id        String   @id @default(cuid())
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  title     String
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model TimeOffRequest {
+  id           String         @id @default(cuid())
+  userId       String
+  user         User           @relation("TimeOffRequester", fields: [userId], references: [id])
+  startDate    DateTime       @db.Date
+  endDate      DateTime       @db.Date
+  reason       String?
+  status       ApprovalStatus @default(PENDING)
+  reviewedById String?
+  reviewedBy   User?          @relation("TimeOffReviewer", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime?
+  reviewNote   String?
+  createdAt    DateTime       @default(now())
+
+  @@index([status])
+}
+
+// Who did what, for HIPAA audit controls. Never store message bodies or notes here.
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  action     String
+  entityType String
+  entityId   String?
+  details    Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
