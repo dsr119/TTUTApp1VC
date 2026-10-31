@@ -6,7 +6,10 @@ const db = new PrismaClient();
 const DEMO_PASSWORD = "Password123!";
 
 async function main() {
-  if (process.env.NODE_ENV === "production") throw new Error("Refusing to seed demo data in production.");
+  // The Lightsail demo server sets ALLOW_DEMO_SEED; real deployments never should.
+  if (process.env.NODE_ENV === "production" && process.env.ALLOW_DEMO_SEED !== "1") {
+    throw new Error("Refusing to seed demo data in production.");
+  }
 
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 12);
   const people: { email: string; name: string; title: string; role: Role; rate: number; phone: string }[] = [
